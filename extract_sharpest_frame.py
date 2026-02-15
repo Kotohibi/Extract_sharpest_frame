@@ -19,6 +19,7 @@ def run_blurdetect(
     scale_width: int,
     block_width: int,
     block_height: int,
+    threads: int,
 ) -> None:
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_file_for_filter = metadata_path.name
@@ -31,6 +32,8 @@ def run_blurdetect(
     command = [
         "ffmpeg",
         "-hide_banner",
+        "-threads",
+        str(threads),
         "-i",
         str(video_file),
         "-vf",
@@ -106,6 +109,7 @@ def extract_frames(
     output_dir: Path,
     output_pattern: str,
     jpeg_quality: int,
+    threads: int,
 ) -> None:
     if not frame_numbers:
         print("No frames selected for extraction.")
@@ -119,6 +123,8 @@ def extract_frames(
     command = [
         "ffmpeg",
         "-hide_banner",
+        "-threads",
+        str(threads),
         "-i",
         str(video_file),
         "-vf",
@@ -163,6 +169,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="JPEG quality for -q:v (smaller means higher quality)",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="ffmpeg thread count (0 = auto)",
+    )
+    parser.add_argument(
+        "--blurdetect-only",
+        action="store_true",
+        help="Run blurdetect only and keep metadata without extracting frames",
+    )
     return parser
 
 
@@ -179,39 +196,53 @@ def main() -> None:
         print("Error: --chunk-size must be 1 or greater.")
         sys.exit(1)
 
+    if args.threads < 0:
+        print("Error: --threads must be 0 or greater.")
+        sys.exit(1)
+
     ensure_ffmpeg_exists()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir / "_blurdetect_metadata.txt"
 
-    try:
-        print(f"Metadata file (temporary): {metadata_path}")
+    metadata_exists = metadata_path.exists()
+
+    if metadata_exists:
+        print(f"Using existing blurdetect metadata: {metadata_path}")
+    else:
+        print(f"Generating blurdetect metadata: {metadata_path}")
         run_blurdetect(
             video_file=video_file,
             metadata_path=metadata_path,
             scale_width=args.scale_width,
             block_width=args.block_width,
             block_height=args.block_height,
+            threads=args.threads,
         )
 
-        print("[2/3] Parsing metadata...")
-        best_frames = parse_best_frames(metadata_path, args.chunk_size)
+    if args.blurdetect_only:
+        if metadata_exists:
+            print("Done: Existing blurdetect metadata is available.")
+        else:
+            print("Done: blurdetect metadata was generated.")
+        print(f"Metadata path: {metadata_path.resolve()}")
+        return
 
-        extract_frames(
-            video_file=video_file,
-            frame_numbers=best_frames,
-            output_dir=output_dir,
-            output_pattern=args.output_pattern,
-            jpeg_quality=args.qv,
-        )
+    print("[2/3] Parsing metadata...")
+    best_frames = parse_best_frames(metadata_path, args.chunk_size)
 
-        print("Done: Sharp frames were extracted successfully.")
-        print(f"Output directory: {Path(args.output_dir).resolve()}")
+    extract_frames(
+        video_file=video_file,
+        frame_numbers=best_frames,
+        output_dir=output_dir,
+        output_pattern=args.output_pattern,
+        jpeg_quality=args.qv,
+        threads=args.threads,
+    )
 
-    finally:
-        if metadata_path.exists():
-            metadata_path.unlink(missing_ok=True)
+    print("Done: Sharp frames were extracted successfully.")
+    print(f"Output directory: {Path(args.output_dir).resolve()}")
 
 
 if __name__ == "__main__":
