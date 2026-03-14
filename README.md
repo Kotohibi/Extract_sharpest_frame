@@ -69,7 +69,7 @@ python extract_sharpest_frame_python.py \
   --output-dir ./sharp_frames
 ```
 
-Extract one frame every 60 frames:
+Extract one frame every 30 frames:
 
 ```bash
 python extract_sharpest_frame_python.py \
