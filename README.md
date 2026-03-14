@@ -1,108 +1,146 @@
 # Extract Sharpest Frame
 
-A lightweight Python CLI tool that extracts sharp frames from a video using `ffmpeg`'s `blurdetect` filter.
+Python-only tool for extracting sharp frames from a video.
 
-It analyzes the video frame-by-frame, splits frames into chunks, and picks the least blurry frame from each chunk.
+This repository provides two entry points:
+
+- `extract_sharpest_frame_python.py`: command-line interface
+- `extract_sharpest_frame_gui.py`: desktop GUI with Japanese/English switching
+
+The implementation uses OpenCV to read video frames, calculates sharpness with the variance of the Laplacian, groups frames by chunk, and saves the sharpest frame from each chunk as a JPEG.
 
 ## Features
 
-- Automatic sharp frame selection with `blurdetect`
-- Extracts one best frame per chunk (`--chunk-size`)
-- `--blurdetect-only` mode for metadata workflow only
-- Reuses existing blurdetect metadata in `--output-dir` when available
-- Configurable analysis scale and blur block size
-- JPEG quality and output naming control
-- Minimal dependency setup (Python standard library + `ffmpeg`)
+- 100% Python workflow with no `ffmpeg` executable dependency
+- Extract one sharp frame per chunk with `--chunk-size`
+- Reuse existing `_sharpness_metadata.csv` when available
+- Regenerate metadata when needed
+- `--analysis-only` mode for metadata creation only
+- GUI with English/Japanese switching
+- GUI confirmation dialog when metadata already exists
+- GUI stop button for cancelling a running job
+- `tqdm`-style progress output in the GUI log area
 
 ## Requirements
 
 - Python 3.8+
-- `ffmpeg` available in your system `PATH`
+- Packages from `requirements.txt`
 
-Check `ffmpeg`:
+Current Python dependencies:
 
-```bash
-ffmpeg -version
-```
+- `opencv-python`
+- `tqdm`
+
+`extract_sharpest_frame_gui.py` uses Tkinter, which is included with standard desktop Python installations in most environments.
 
 ## Installation
 
-Clone this repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/Kotohibi/Extract_sharpest_frame.git
 cd Extract_sharpest_frame
+pip install -r requirements.txt
 ```
 
-No extra Python packages are required.
-
-## Usage
+## CLI Usage
 
 Basic example:
 
 ```bash
-python extract_sharpest_frame.py --video /path/to/video.mp4
+python extract_sharpest_frame_python.py --video /path/to/video.mp4
 ```
 
-Example with custom output directory:
+Windows PowerShell example:
+
+```powershell
+python .\extract_sharpest_frame_python.py --video C:\path\to\video.mp4
+```
+
+Save output to a custom folder:
 
 ```bash
-python extract_sharpest_frame.py \
+python extract_sharpest_frame_python.py \
   --video /path/to/video.mp4 \
-  --output-dir ./frames
+  --output-dir ./sharp_frames
 ```
 
-Example with fixed ffmpeg thread count:
+Extract one frame every 60 frames:
 
 ```bash
-python extract_sharpest_frame.py \
+python extract_sharpest_frame_python.py \
   --video /path/to/video.mp4 \
-  --threads 4
+  --chunk-size 30
 ```
 
-Run blurdetect only (no frame extraction):
+Create metadata only:
 
 ```bash
-python extract_sharpest_frame.py \
+python extract_sharpest_frame_python.py \
   --video /path/to/video.mp4 \
-  --output-dir ./frames \
-  --blurdetect-only
+  --output-dir ./sharp_frames \
+  --analysis-only
 ```
 
-If `./frames/_blurdetect_metadata.txt` already exists, the script skips blurdetect and uses that metadata for frame extraction.
+## GUI Usage
 
-Console messages:
+Start the GUI:
 
-- Existing metadata: `Using existing blurdetect metadata: ...`
-- New metadata run: `Generating blurdetect metadata: ...`
+```bash
+python extract_sharpest_frame_gui.py
+```
 
-## Command Options
+Windows PowerShell example:
+
+```powershell
+python .\extract_sharpest_frame_gui.py
+```
+
+GUI behavior:
+
+- Select a video file and output folder
+- Change UI language between English and Japanese
+- Run extraction or analysis-only mode
+- If `_sharpness_metadata.csv` already exists, choose whether to reuse it
+- Stop a running job with the `Stop` button
+- View progress and logs in the log area
+
+## CLI Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--video` | string | required | Input video file path |
 | `--chunk-size` | int | `30` | Select 1 frame per N frames |
-| `--scale-width` | int | `1920` | Width used for blur analysis |
-| `--block-width` | int | `32` | `blurdetect` block width |
-| `--block-height` | int | `32` | `blurdetect` block height |
+| `--scale-width` | int | `1920` | Resize wider frames to this width for analysis |
 | `--output-dir` | string | `sharp_frames` | Output directory |
-| `--output-pattern` | string | `output_frame_%05d.jpg` | Output filename pattern (`ffmpeg` style) |
-| `--qv` | int | `1` | JPEG quality for `-q:v` (lower is higher quality) |
-| `--threads` | int | `0` | `ffmpeg` thread count (`0` = auto) |
-| `--blurdetect-only` | flag | off | Metadata workflow only (no frame extraction) |
+| `--output-pattern` | string | `output_frame_%05d.jpg` | Output filename pattern |
+| `--qv` | int | `1` | JPEG quality setting compatible with the previous `ffmpeg`-style scale |
+| `--analysis-only` | flag | off | Create metadata only without writing JPEG files |
+
+## Output Files
+
+The tool writes the following files into `--output-dir`:
+
+- `_sharpness_metadata.csv`: frame number and sharpness score for the analyzed video
+- `output_frame_00001.jpg`, `output_frame_00002.jpg`, ...: extracted sharp frames
 
 ## How It Works
 
-1. Reuses existing blurdetect metadata from `--output-dir` if available; otherwise runs `ffmpeg` with `blurdetect`.
-2. Groups frames into chunks (`--chunk-size`).
-3. Chooses the frame with the minimum blur score in each chunk.
-4. Extracts selected frames to JPEG files.
+1. Open the input video with OpenCV.
+2. Compute a sharpness score for each frame using the variance of the Laplacian.
+3. Save frame scores to `_sharpness_metadata.csv`.
+4. Split frames into chunks based on `--chunk-size`.
+5. Choose the highest-scoring frame in each chunk.
+6. Save the selected frames as JPEG images.
+
+If metadata already exists, it can be reused instead of analyzing the video again.
 
 ## Notes
 
-- Metadata is saved as `_blurdetect_metadata.txt` in `--output-dir` and can be reused in later runs.
-- A smaller `--chunk-size` extracts more frames.
-- If your source is very high resolution, lowering `--scale-width` can speed up analysis.
+- A smaller `--chunk-size` produces more extracted frames.
+- Lowering `--scale-width` can improve performance on high-resolution videos.
+- The sharpness score is Laplacian-based, so results will differ from ffmpeg `blurdetect` output.
+- If a GUI job is cancelled during metadata generation, the partial metadata file is removed.
 
 ## License
 
