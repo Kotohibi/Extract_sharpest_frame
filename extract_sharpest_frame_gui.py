@@ -1,11 +1,43 @@
+import multiprocessing as mp
 import queue
-import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 from extract_sharpest_frame import PROGRESS_PREFIX, SharpestFrameCancelled, SharpestFrameError, run_extraction
+
+
+def run_extraction_process(
+    video: str,
+    output_dir: str,
+    chunk_size: int,
+    scale_width: int,
+    workers: int,
+    output_pattern: str,
+    jpeg_quality: str,
+    analysis_only: bool,
+    reuse_metadata: bool,
+    result_queue,
+) -> None:
+    try:
+        run_extraction(
+            video=video,
+            chunk_size=chunk_size,
+            scale_width=scale_width,
+            workers=workers,
+            output_dir=output_dir,
+            output_pattern=output_pattern,
+            jpeg_quality=jpeg_quality,
+            analysis_only=analysis_only,
+            reuse_metadata=reuse_metadata,
+            logger=lambda message: result_queue.put(("log", message)),
+        )
+        result_queue.put(("done", None))
+    except SharpestFrameCancelled:
+        result_queue.put(("cancelled", None))
+    except (SharpestFrameError, Exception) as exc:
+        result_queue.put(("error", str(exc)))
 
 
 TRANSLATIONS = {
@@ -18,8 +50,9 @@ TRANSLATIONS = {
         "browse_output": "Browse...",
         "chunk_size": "Chunk size",
         "scale_width": "Scale width",
+        "workers": "Workers",
         "output_pattern": "Output pattern",
-        "qv": "JPEG quality (ffmpeg-style qv)",
+        "jpeg_quality": "JPEG quality (%)",
         "analysis_only": "Analysis only",
         "run": "Run",
         "stop": "Stop",
@@ -50,8 +83,9 @@ TRANSLATIONS = {
         "browse_output": "参照...",
         "chunk_size": "チャンクサイズ",
         "scale_width": "解析幅",
+        "workers": "ワーカー数",
         "output_pattern": "出力ファイル名パターン",
-        "qv": "JPEG品質 (ffmpeg 互換 qv)",
+        "jpeg_quality": "JPEG品質 (%)",
         "analysis_only": "解析のみ",
         "run": "実行",
         "stop": "停止",
@@ -84,14 +118,16 @@ class SharpestFrameGui(tk.Tk):
         self.output_dir = tk.StringVar(value="sharp_frames")
         self.chunk_size = tk.StringVar(value="30")
         self.scale_width = tk.StringVar(value="1920")
+        self.workers = tk.StringVar(value="4")
         self.output_pattern = tk.StringVar(value="output_frame_%05d.jpg")
-        self.qv = tk.StringVar(value="1")
+        self.jpeg_quality = tk.StringVar(value="95")
         self.analysis_only = tk.BooleanVar(value=False)
         self.status_text = tk.StringVar()
-        self.log_queue = queue.Queue()
-        self.worker_thread: Optional[threading.Thread] = None
+        self.log_queue = None
+        self.worker_process: Optional[mp.Process] = None
         self.progress_line_active = False
-        self.cancel_event = threading.Event()
+        self.active_metadata_path: Optional[Path] = None
+        self.active_metadata_may_be_partial = False
 
         self._build_widgets()
         self._apply_translations()
@@ -109,7 +145,8 @@ class SharpestFrameGui(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         root.columnconfigure(1, weight=1)
-        root.rowconfigure(7, weight=1)
+        root.columnconfigure(3, weight=1)
+        root.rowconfigure(6, weight=1)
 
         self.language_label = ttk.Label(root)
         self.language_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 12))
@@ -127,16 +164,16 @@ class SharpestFrameGui(tk.Tk):
         self.video_label = ttk.Label(root)
         self.video_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=6)
         self.video_entry = ttk.Entry(root, textvariable=self.video_path)
-        self.video_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        self.video_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=6)
         self.video_button = ttk.Button(root, command=self._browse_video)
-        self.video_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=6)
+        self.video_button.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=6)
 
         self.output_label = ttk.Label(root)
         self.output_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=6)
         self.output_entry = ttk.Entry(root, textvariable=self.output_dir)
-        self.output_entry.grid(row=2, column=1, sticky="ew", pady=6)
+        self.output_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=6)
         self.output_button = ttk.Button(root, command=self._browse_output_dir)
-        self.output_button.grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=6)
+        self.output_button.grid(row=2, column=3, sticky="ew", padx=(8, 0), pady=6)
 
         self.chunk_label = ttk.Label(root)
         self.chunk_label.grid(row=3, column=0, sticky="w", padx=(0, 8), pady=6)
@@ -144,22 +181,27 @@ class SharpestFrameGui(tk.Tk):
         self.chunk_entry.grid(row=3, column=1, sticky="ew", pady=6)
 
         self.scale_label = ttk.Label(root)
-        self.scale_label.grid(row=4, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.scale_label.grid(row=3, column=2, sticky="w", padx=(16, 8), pady=6)
         self.scale_entry = ttk.Entry(root, textvariable=self.scale_width)
-        self.scale_entry.grid(row=4, column=1, sticky="ew", pady=6)
+        self.scale_entry.grid(row=3, column=3, sticky="ew", pady=6)
+
+        self.workers_label = ttk.Label(root)
+        self.workers_label.grid(row=4, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.workers_entry = ttk.Entry(root, textvariable=self.workers)
+        self.workers_entry.grid(row=4, column=1, sticky="ew", pady=6)
 
         self.pattern_label = ttk.Label(root)
-        self.pattern_label.grid(row=5, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.pattern_label.grid(row=4, column=2, sticky="w", padx=(16, 8), pady=6)
         self.pattern_entry = ttk.Entry(root, textvariable=self.output_pattern)
-        self.pattern_entry.grid(row=5, column=1, sticky="ew", pady=6)
+        self.pattern_entry.grid(row=4, column=3, sticky="ew", pady=6)
 
-        self.qv_label = ttk.Label(root)
-        self.qv_label.grid(row=6, column=0, sticky="w", padx=(0, 8), pady=6)
-        self.qv_entry = ttk.Entry(root, textvariable=self.qv)
-        self.qv_entry.grid(row=6, column=1, sticky="ew", pady=6)
+        self.jpeg_quality_label = ttk.Label(root)
+        self.jpeg_quality_label.grid(row=5, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.jpeg_quality_entry = ttk.Entry(root, textvariable=self.jpeg_quality)
+        self.jpeg_quality_entry.grid(row=5, column=1, sticky="ew", pady=6)
 
         options_frame = ttk.Frame(root)
-        options_frame.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        options_frame.grid(row=6, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
         options_frame.columnconfigure(0, weight=1)
         options_frame.rowconfigure(1, weight=1)
 
@@ -187,7 +229,7 @@ class SharpestFrameGui(tk.Tk):
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         self.status_label = ttk.Label(root, textvariable=self.status_text)
-        self.status_label.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        self.status_label.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(12, 0))
 
     def _apply_translations(self) -> None:
         self.title(self.t("title"))
@@ -198,16 +240,20 @@ class SharpestFrameGui(tk.Tk):
         self.output_button.configure(text=self.t("browse_output"))
         self.chunk_label.configure(text=self.t("chunk_size"))
         self.scale_label.configure(text=self.t("scale_width"))
+        self.workers_label.configure(text=self.t("workers"))
         self.pattern_label.configure(text=self.t("output_pattern"))
-        self.qv_label.configure(text=self.t("qv"))
+        self.jpeg_quality_label.configure(text=self.t("jpeg_quality"))
         self.analysis_checkbox.configure(text=self.t("analysis_only"))
         self.run_button.configure(text=self.t("run"))
         self.stop_button.configure(text=self.t("stop"))
         self.clear_button.configure(text=self.t("clear_log"))
         self.log_label.configure(text=self.t("log"))
-        if not self.worker_thread or not self.worker_thread.is_alive():
+        if not self._is_worker_running():
             self.status_text.set(self.t("ready"))
         self.language_combo.configure(values=["ja", "en"])
+
+    def _is_worker_running(self) -> bool:
+        return self.worker_process is not None and self.worker_process.is_alive()
 
     def _browse_video(self) -> None:
         selected = filedialog.askopenfilename(title=self.t("browse_video_title"))
@@ -257,6 +303,21 @@ class SharpestFrameGui(tk.Tk):
         except ValueError as exc:
             raise ValueError(self.t("invalid_integer").format(field=self.t(field_key))) from exc
 
+    def _parse_jpeg_quality(self, value: str) -> str:
+        normalized = value.strip()
+        if normalized.endswith("%"):
+            normalized = normalized[:-1].strip()
+
+        try:
+            quality = int(normalized)
+        except ValueError as exc:
+            raise ValueError(self.t("invalid_integer").format(field=self.t("jpeg_quality"))) from exc
+
+        if quality < 1 or quality > 100:
+            raise ValueError(self.t("invalid_integer").format(field=self.t("jpeg_quality")))
+
+        return str(quality)
+
     def _set_running_state(self, running: bool) -> None:
         edit_state = "disabled" if running else "normal"
         self.run_button.configure(state=edit_state)
@@ -267,16 +328,27 @@ class SharpestFrameGui(tk.Tk):
         self.status_text.set(self.t("running") if running else self.t("ready"))
 
     def _stop_run(self) -> None:
-        if not self.worker_thread or not self.worker_thread.is_alive():
+        if not self._is_worker_running():
             return
 
-        self.cancel_event.set()
-        self.stop_button.configure(state="disabled")
         self.status_text.set(self.t("stopping"))
         self._append_log(self.t("stopping"))
+        self.stop_button.configure(state="disabled")
+        self.worker_process.terminate()
+        self.worker_process.join(timeout=0.5)
+        if self.worker_process.is_alive() and hasattr(self.worker_process, "kill"):
+            self.worker_process.kill()
+            self.worker_process.join(timeout=0.5)
+
+        if self.active_metadata_may_be_partial and self.active_metadata_path and self.active_metadata_path.exists():
+            self.active_metadata_path.unlink()
+
+        self.worker_process = None
+        self._append_log(self.t("cancelled"))
+        self._set_running_state(False)
 
     def _start_run(self) -> None:
-        if self.worker_thread and self.worker_thread.is_alive():
+        if self._is_worker_running():
             return
 
         video = self.video_path.get().strip()
@@ -293,7 +365,8 @@ class SharpestFrameGui(tk.Tk):
         try:
             chunk_size = self._parse_int(self.chunk_size.get().strip(), "chunk_size")
             scale_width = self._parse_int(self.scale_width.get().strip(), "scale_width")
-            qv = self._parse_int(self.qv.get().strip(), "qv")
+            workers = self._parse_int(self.workers.get().strip(), "workers")
+            jpeg_quality = self._parse_jpeg_quality(self.jpeg_quality.get())
         except ValueError as exc:
             messagebox.showerror(self.t("failed"), str(exc))
             return
@@ -306,49 +379,21 @@ class SharpestFrameGui(tk.Tk):
                 self.t("metadata_dialog_message"),
             )
 
-        self.cancel_event.clear()
+        self.active_metadata_path = metadata_path
+        self.active_metadata_may_be_partial = (not metadata_path.exists()) or (metadata_path.exists() and not reuse_metadata)
+        self.log_queue = mp.Queue()
         self._set_running_state(True)
         self._append_log(f"{self.t('running')} {Path(video)}")
 
-        self.worker_thread = threading.Thread(
-            target=self._run_worker,
-            args=(video, output_dir, chunk_size, scale_width, self.output_pattern.get().strip(), qv, self.analysis_only.get(), reuse_metadata),
-            daemon=True,
+        self.worker_process = mp.Process(
+            target=run_extraction_process,
+            args=(video, output_dir, chunk_size, scale_width, workers, self.output_pattern.get().strip(), jpeg_quality, self.analysis_only.get(), reuse_metadata),
+            kwargs={"result_queue": self.log_queue},
         )
-        self.worker_thread.start()
-
-    def _run_worker(
-        self,
-        video: str,
-        output_dir: str,
-        chunk_size: int,
-        scale_width: int,
-        output_pattern: str,
-        qv: int,
-        analysis_only: bool,
-        reuse_metadata: bool,
-    ) -> None:
-        try:
-            run_extraction(
-                video=video,
-                chunk_size=chunk_size,
-                scale_width=scale_width,
-                output_dir=output_dir,
-                output_pattern=output_pattern,
-                qv=qv,
-                analysis_only=analysis_only,
-                reuse_metadata=reuse_metadata,
-                logger=lambda message: self.log_queue.put(("log", message)),
-                should_cancel=self.cancel_event.is_set,
-            )
-            self.log_queue.put(("done", self.t("done")))
-        except SharpestFrameCancelled:
-            self.log_queue.put(("cancelled", self.t("cancelled")))
-        except (SharpestFrameError, Exception) as exc:
-            self.log_queue.put(("error", str(exc)))
+        self.worker_process.start()
 
     def _drain_log_queue(self) -> None:
-        while True:
+        while self.log_queue is not None:
             try:
                 kind, payload = self.log_queue.get_nowait()
             except queue.Empty:
@@ -360,19 +405,23 @@ class SharpestFrameGui(tk.Tk):
                 else:
                     self._append_log(payload)
             elif kind == "done":
-                self._append_log(payload)
+                self._append_log(self.t("done"))
+                self.worker_process = None
                 self._set_running_state(False)
-                messagebox.showinfo(self.t("title"), payload)
+                messagebox.showinfo(self.t("title"), self.t("done"))
             elif kind == "cancelled":
-                self._append_log(payload)
+                self._append_log(self.t("cancelled"))
+                self.worker_process = None
                 self._set_running_state(False)
             elif kind == "error":
                 self._append_log(f"Error: {payload}")
+                self.worker_process = None
                 self._set_running_state(False)
                 messagebox.showerror(self.t("failed"), payload)
 
-        if self.worker_thread and not self.worker_thread.is_alive() and self.run_button["state"] == "disabled":
+        if self.worker_process and not self.worker_process.is_alive() and self.run_button["state"] == "disabled":
             self._set_running_state(False)
+            self.worker_process = None
 
         self.after(100, self._drain_log_queue)
 
@@ -383,4 +432,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    mp.freeze_support()
     main()

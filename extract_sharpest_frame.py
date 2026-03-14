@@ -1,8 +1,11 @@
 import argparse
 import csv
 import sys
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from math import ceil
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from time import monotonic
+from typing import Callable, Dict, List, Optional, Tuple
 
 try:
     import cv2
@@ -18,6 +21,8 @@ except ImportError:
 Logger = Optional[Callable[[str], None]]
 CancelChecker = Optional[Callable[[], bool]]
 PROGRESS_PREFIX = "[progress] "
+SPINNER_FRAMES = "|/-\\"
+MULTIPROCESS_PROGRESS_INTERVAL = 0.2
 
 
 class SharpestFrameError(Exception):
@@ -31,7 +36,14 @@ class SharpestFrameCancelled(SharpestFrameError):
 class GuiTqdm(tqdm):
     def __init__(self, *args, logger: Logger = None, **kwargs) -> None:
         self.logger = logger
+        self._last_displayed_message = ""
         super().__init__(*args, **kwargs)
+
+    def update(self, n=1):
+        displayed = super().update(n)
+        if self.logger is not None:
+            self.display()
+        return displayed
 
     def display(self, msg=None, pos=None) -> None:
         if self.logger is None:
@@ -40,7 +52,8 @@ class GuiTqdm(tqdm):
 
         progress_message = msg if msg is not None else str(self)
         cleaned = progress_message.strip()
-        if cleaned:
+        if cleaned and cleaned != self._last_displayed_message:
+            self._last_displayed_message = cleaned
             emit_progress(cleaned, self.logger)
 
 
@@ -71,6 +84,8 @@ def create_progress(total: Optional[int], desc: str, logger: Logger = None):
     if logger is None:
         return tqdm(**progress_kwargs)
 
+    progress_kwargs["mininterval"] = 0
+    progress_kwargs["miniters"] = 1
     return GuiTqdm(logger=logger, **progress_kwargs)
 
 
@@ -108,23 +123,74 @@ def compute_sharpness(frame, scale_width: int) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
-def analyze_video(
+def parse_jpeg_quality_value(value) -> int:
+    if isinstance(value, int):
+        quality = value
+    else:
+        normalized = str(value).strip()
+        if normalized.endswith("%"):
+            normalized = normalized[:-1].strip()
+
+        try:
+            quality = int(normalized)
+        except ValueError as exc:
+            raise SharpestFrameError("JPEG quality must be an integer percentage from 1 to 100.") from exc
+
+    if quality < 1 or quality > 100:
+        raise SharpestFrameError("JPEG quality must be between 1 and 100.")
+
+    return quality
+
+
+def build_analysis_ranges(total_frames: int, workers: int) -> List[Tuple[int, int]]:
+    task_count = max(workers * 8, workers)
+    range_size = max(1, ceil(total_frames / task_count))
+    ranges: List[Tuple[int, int]] = []
+    start_frame = 0
+
+    while start_frame < total_frames:
+        end_frame = min(total_frames, start_frame + range_size)
+        ranges.append((start_frame, end_frame))
+        start_frame = end_frame
+
+    return ranges
+
+
+def analyze_video_range(video_path: str, start_frame: int, end_frame: int, scale_width: int) -> List[Tuple[int, float]]:
+    ensure_opencv_available()
+
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        raise SharpestFrameError(f"Failed to open video: {video_path}")
+
+    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    results: List[Tuple[int, float]] = []
+    frame_number = start_frame
+
+    while frame_number < end_frame:
+        ok, frame = capture.read()
+        if not ok:
+            break
+
+        results.append((frame_number, compute_sharpness(frame, scale_width)))
+        frame_number += 1
+
+    capture.release()
+    return results
+
+
+def analyze_video_single_process(
     video_file: Path,
     metadata_path: Path,
     scale_width: int,
+    total_frames: Optional[int],
     logger: Logger = None,
     should_cancel: CancelChecker = None,
-) -> None:
-    ensure_opencv_available()
-    ensure_tqdm_available()
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-
+) -> int:
     capture = cv2.VideoCapture(str(video_file))
     if not capture.isOpened():
         raise SharpestFrameError(f"Failed to open video: {video_file}")
 
-    emit("[1/3] Analyzing sharpness...", logger)
-    total_frames = get_frame_count(capture)
     frame_number = 0
     try:
         with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
@@ -150,6 +216,120 @@ def analyze_video(
         raise
 
     capture.release()
+    return frame_number
+
+
+def analyze_video_multi_process(
+    video_file: Path,
+    metadata_path: Path,
+    scale_width: int,
+    total_frames: int,
+    workers: int,
+    logger: Logger = None,
+    should_cancel: CancelChecker = None,
+) -> int:
+    ranges = build_analysis_ranges(total_frames, workers)
+    completed_ranges: Dict[int, List[Tuple[int, float]]] = {}
+    next_range_index = 0
+    written_frames = 0
+    spinner_index = 0
+    last_progress_refresh = 0.0
+
+    try:
+        with metadata_path.open("w", newline="", encoding="utf-8") as metadata_file:
+            writer = csv.writer(metadata_file)
+            writer.writerow(["frame", "sharpness"])
+
+            with create_progress(total=total_frames, desc="Analyze", logger=logger) as progress_bar:
+                with ProcessPoolExecutor(max_workers=workers) as executor:
+                    future_map = {
+                        executor.submit(analyze_video_range, str(video_file), start_frame, end_frame, scale_width): index
+                        for index, (start_frame, end_frame) in enumerate(ranges)
+                    }
+
+                    progress_bar.set_postfix_str(f"{SPINNER_FRAMES[spinner_index]} {len(future_map)} ranges")
+                    progress_bar.display()
+                    last_progress_refresh = monotonic()
+
+                    while future_map:
+                        raise_if_cancelled(should_cancel)
+
+                        done_futures, _ = wait(future_map, timeout=0.1, return_when=FIRST_COMPLETED)
+                        if not done_futures:
+                            now = monotonic()
+                            if now - last_progress_refresh >= MULTIPROCESS_PROGRESS_INTERVAL:
+                                spinner_index = (spinner_index + 1) % len(SPINNER_FRAMES)
+                                progress_bar.set_postfix_str(f"{SPINNER_FRAMES[spinner_index]} {len(future_map)} ranges")
+                                progress_bar.display()
+                                last_progress_refresh = now
+                            continue
+
+                        for future in done_futures:
+                            range_index = future_map.pop(future)
+                            segment_results = future.result()
+                            completed_ranges[range_index] = segment_results
+                            progress_bar.update(len(segment_results))
+
+                        spinner_index = (spinner_index + 1) % len(SPINNER_FRAMES)
+                        progress_bar.set_postfix_str(f"{SPINNER_FRAMES[spinner_index]} {len(future_map)} ranges")
+                        progress_bar.display()
+                        last_progress_refresh = monotonic()
+
+                        while next_range_index in completed_ranges:
+                            for frame_number, sharpness in completed_ranges.pop(next_range_index):
+                                writer.writerow([frame_number, f"{sharpness:.10f}"])
+                                written_frames += 1
+                            next_range_index += 1
+
+                    progress_bar.set_postfix_str("done")
+                    progress_bar.display()
+    except SharpestFrameCancelled:
+        if metadata_path.exists():
+            metadata_path.unlink()
+        raise
+
+    return written_frames
+
+
+def analyze_video(
+    video_file: Path,
+    metadata_path: Path,
+    scale_width: int,
+    workers: int = 4,
+    logger: Logger = None,
+    should_cancel: CancelChecker = None,
+) -> None:
+    ensure_opencv_available()
+    ensure_tqdm_available()
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+    emit("[1/3] Analyzing sharpness...", logger)
+    probe_capture = cv2.VideoCapture(str(video_file))
+    if not probe_capture.isOpened():
+        raise SharpestFrameError(f"Failed to open video: {video_file}")
+
+    total_frames = get_frame_count(probe_capture)
+    probe_capture.release()
+
+    if workers <= 1 or total_frames is None or total_frames <= 1:
+        frame_number = analyze_video_single_process(
+            video_file=video_file,
+            metadata_path=metadata_path,
+            scale_width=scale_width,
+            total_frames=total_frames,
+            logger=logger,
+            should_cancel=should_cancel,
+        )
+    else:
+        frame_number = analyze_video_multi_process(
+            video_file=video_file,
+            metadata_path=metadata_path,
+            scale_width=scale_width,
+            total_frames=total_frames,
+            workers=workers,
+            logger=logger,
+            should_cancel=should_cancel,
+        )
 
     if frame_number == 0:
         raise SharpestFrameError("No frames could be read from the video.")
@@ -201,11 +381,6 @@ def parse_best_frames(
         best_frame_numbers.append(best[0])
 
     return best_frame_numbers
-
-
-def ffmpeg_qv_to_jpeg_quality(qv: int) -> int:
-    qv = max(1, min(31, qv))
-    return max(5, 100 - ((qv - 1) * 3))
 
 
 def format_output_filename(output_pattern: str, output_index: int) -> str:
@@ -291,9 +466,10 @@ def run_extraction(
     video: str,
     chunk_size: int = 30,
     scale_width: int = 1920,
+    workers: int = 4,
     output_dir: str = "sharp_frames",
     output_pattern: str = "output_frame_%05d.jpg",
-    qv: int = 1,
+    jpeg_quality: int = 95,
     analysis_only: bool = False,
     reuse_metadata: bool = True,
     logger: Logger = None,
@@ -312,6 +488,11 @@ def run_extraction(
     if scale_width < 0:
         raise SharpestFrameError("--scale-width must be 0 or greater.")
 
+    if workers <= 0:
+        raise SharpestFrameError("--workers must be 1 or greater.")
+
+    jpeg_quality = parse_jpeg_quality_value(jpeg_quality)
+
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir_path / "_sharpness_metadata.csv"
@@ -329,6 +510,7 @@ def run_extraction(
             video_file=video_file,
             metadata_path=metadata_path,
             scale_width=scale_width,
+            workers=workers,
             logger=logger,
             should_cancel=should_cancel,
         )
@@ -347,7 +529,7 @@ def run_extraction(
         frame_numbers=best_frames,
         output_dir=output_dir_path,
         output_pattern=output_pattern,
-        jpeg_quality=ffmpeg_qv_to_jpeg_quality(qv),
+        jpeg_quality=jpeg_quality,
         logger=logger,
         should_cancel=should_cancel,
     )
@@ -374,6 +556,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1920,
         help="Width used for sharpness analysis; frames wider than this are resized",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Worker count for metadata extraction multiprocessing",
+    )
     parser.add_argument("--output-dir", default="sharp_frames", help="Output directory")
     parser.add_argument(
         "--output-pattern",
@@ -381,10 +569,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output filename pattern in printf format",
     )
     parser.add_argument(
-        "--qv",
-        type=int,
-        default=1,
-        help="Approximate JPEG quality compatible with the original ffmpeg-style option (1-31)",
+        "--jpeg-quality",
+        default="95",
+        help="JPEG quality percentage from 1 to 100; values like 95 or 95%% are accepted",
     )
     parser.add_argument(
         "--analysis-only",
@@ -403,9 +590,10 @@ def main() -> None:
             video=args.video,
             chunk_size=args.chunk_size,
             scale_width=args.scale_width,
+            workers=args.workers,
             output_dir=args.output_dir,
             output_pattern=args.output_pattern,
-            qv=args.qv,
+            jpeg_quality=args.jpeg_quality,
             analysis_only=args.analysis_only,
             reuse_metadata=True,
         )
