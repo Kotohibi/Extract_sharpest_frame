@@ -1,43 +1,13 @@
-import multiprocessing as mp
 import queue
+import subprocess
+import sys
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
-from extract_sharpest_frame import PROGRESS_PREFIX, SharpestFrameCancelled, SharpestFrameError, run_extraction
-
-
-def run_extraction_process(
-    video: str,
-    output_dir: str,
-    chunk_size: int,
-    scale_width: int,
-    workers: int,
-    output_pattern: str,
-    jpeg_quality: str,
-    analysis_only: bool,
-    reuse_metadata: bool,
-    result_queue,
-) -> None:
-    try:
-        run_extraction(
-            video=video,
-            chunk_size=chunk_size,
-            scale_width=scale_width,
-            workers=workers,
-            output_dir=output_dir,
-            output_pattern=output_pattern,
-            jpeg_quality=jpeg_quality,
-            analysis_only=analysis_only,
-            reuse_metadata=reuse_metadata,
-            logger=lambda message: result_queue.put(("log", message)),
-        )
-        result_queue.put(("done", None))
-    except SharpestFrameCancelled:
-        result_queue.put(("cancelled", None))
-    except (SharpestFrameError, Exception) as exc:
-        result_queue.put(("error", str(exc)))
+from extract_sharpest_frame import PROGRESS_PREFIX
 
 
 TRANSLATIONS = {
@@ -69,6 +39,8 @@ TRANSLATIONS = {
         "failed": "Processing failed",
         "metadata_dialog_title": "Existing metadata found",
         "metadata_dialog_message": "Sharpness metadata already exists in the output folder. Use it for frame extraction?",
+        "close_dialog_title": "Process still running",
+        "close_dialog_message": "A CLI process is still running. Force stop it and close the window?",
         "browse_video_title": "Select a video file",
         "browse_output_title": "Select an output folder",
         "lang_en": "English",
@@ -102,6 +74,8 @@ TRANSLATIONS = {
         "failed": "処理に失敗しました",
         "metadata_dialog_title": "既存メタデータを検出",
         "metadata_dialog_message": "出力フォルダにシャープネスのメタデータがあります。これを使ってフレーム切り出しを行いますか？",
+        "close_dialog_title": "処理を実行中です",
+        "close_dialog_message": "CLI の子プロセスがまだ実行中です。強制停止してウィンドウを閉じますか？",
         "browse_video_title": "動画ファイルを選択",
         "browse_output_title": "出力フォルダを選択",
         "lang_en": "英語",
@@ -124,13 +98,17 @@ class SharpestFrameGui(tk.Tk):
         self.analysis_only = tk.BooleanVar(value=False)
         self.status_text = tk.StringVar()
         self.log_queue = None
-        self.worker_process: Optional[mp.Process] = None
+        self.worker_process: Optional[subprocess.Popen] = None
+        self.log_thread: Optional[threading.Thread] = None
+        self.stop_requested = False
+        self.is_closing = False
         self.progress_line_active = False
         self.active_metadata_path: Optional[Path] = None
         self.active_metadata_may_be_partial = False
 
         self._build_widgets()
         self._apply_translations()
+        self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
         self.after(100, self._drain_log_queue)
 
     def t(self, key: str) -> str:
@@ -187,8 +165,8 @@ class SharpestFrameGui(tk.Tk):
 
         self.workers_label = ttk.Label(root)
         self.workers_label.grid(row=4, column=0, sticky="w", padx=(0, 8), pady=6)
-        self.workers_entry = ttk.Entry(root, textvariable=self.workers)
-        self.workers_entry.grid(row=4, column=1, sticky="ew", pady=6)
+        self.workers_spinbox = ttk.Spinbox(root, from_=1, to=128, textvariable=self.workers, increment=1)
+        self.workers_spinbox.grid(row=4, column=1, sticky="ew", pady=6)
 
         self.pattern_label = ttk.Label(root)
         self.pattern_label.grid(row=4, column=2, sticky="w", padx=(16, 8), pady=6)
@@ -253,7 +231,109 @@ class SharpestFrameGui(tk.Tk):
         self.language_combo.configure(values=["ja", "en"])
 
     def _is_worker_running(self) -> bool:
-        return self.worker_process is not None and self.worker_process.is_alive()
+        return self.worker_process is not None and self.worker_process.poll() is None
+
+    def _build_cli_command(
+        self,
+        video: str,
+        output_dir: str,
+        chunk_size: int,
+        scale_width: int,
+        workers: int,
+        output_pattern: str,
+        jpeg_quality: str,
+        analysis_only: bool,
+        reuse_metadata: bool,
+    ) -> list[str]:
+        command = [
+            sys.executable,
+            str(Path(__file__).with_name("extract_sharpest_frame.py")),
+            "--gui-log-output",
+            "--video",
+            video,
+            "--chunk-size",
+            str(chunk_size),
+            "--scale-width",
+            str(scale_width),
+            "--workers",
+            str(workers),
+            "--output-dir",
+            output_dir,
+            "--output-pattern",
+            output_pattern,
+            "--jpeg-quality",
+            jpeg_quality,
+        ]
+
+        if analysis_only:
+            command.append("--analysis-only")
+
+        if not reuse_metadata:
+            command.append("--regenerate-metadata")
+
+        return command
+
+    def _stream_process_output(self, process: subprocess.Popen) -> None:
+        assert process.stdout is not None
+
+        for line in process.stdout:
+            self.log_queue.put(("log", line.rstrip("\r\n")))
+
+        process.stdout.close()
+        return_code = process.wait()
+
+        if self.stop_requested:
+            self.log_queue.put(("cancelled", None))
+        elif return_code == 0:
+            self.log_queue.put(("done", None))
+        else:
+            self.log_queue.put(("error", f"CLI exited with code {return_code}."))
+
+    def _force_kill_process_tree(self, process: subprocess.Popen) -> None:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1.0)
+
+    def _cleanup_partial_metadata(self) -> None:
+        if self.active_metadata_may_be_partial and self.active_metadata_path and self.active_metadata_path.exists():
+            self.active_metadata_path.unlink()
+
+    def _stop_running_process(self, append_cancel_log: bool) -> None:
+        if not self._is_worker_running():
+            return
+
+        self.stop_requested = True
+        assert self.worker_process is not None
+        self._force_kill_process_tree(self.worker_process)
+        self._cleanup_partial_metadata()
+
+        if append_cancel_log:
+            self._append_log(self.t("cancelled"))
+
+    def _on_close_requested(self) -> None:
+        if self._is_worker_running():
+            should_close = messagebox.askyesno(
+                self.t("close_dialog_title"),
+                self.t("close_dialog_message"),
+            )
+            if not should_close:
+                return
+
+            self.status_text.set(self.t("stopping"))
+            self._append_log(self.t("stopping"))
+            self._stop_running_process(append_cancel_log=False)
+
+        self.is_closing = True
+        self.destroy()
 
     def _browse_video(self) -> None:
         selected = filedialog.askopenfilename(title=self.t("browse_video_title"))
@@ -334,17 +414,9 @@ class SharpestFrameGui(tk.Tk):
         self.status_text.set(self.t("stopping"))
         self._append_log(self.t("stopping"))
         self.stop_button.configure(state="disabled")
-        self.worker_process.terminate()
-        self.worker_process.join(timeout=0.5)
-        if self.worker_process.is_alive() and hasattr(self.worker_process, "kill"):
-            self.worker_process.kill()
-            self.worker_process.join(timeout=0.5)
-
-        if self.active_metadata_may_be_partial and self.active_metadata_path and self.active_metadata_path.exists():
-            self.active_metadata_path.unlink()
-
+        self._stop_running_process(append_cancel_log=True)
         self.worker_process = None
-        self._append_log(self.t("cancelled"))
+        self.log_thread = None
         self._set_running_state(False)
 
     def _start_run(self) -> None:
@@ -381,18 +453,44 @@ class SharpestFrameGui(tk.Tk):
 
         self.active_metadata_path = metadata_path
         self.active_metadata_may_be_partial = (not metadata_path.exists()) or (metadata_path.exists() and not reuse_metadata)
-        self.log_queue = mp.Queue()
+        self.log_queue = queue.Queue()
+        self.stop_requested = False
         self._set_running_state(True)
         self._append_log(f"{self.t('running')} {Path(video)}")
 
-        self.worker_process = mp.Process(
-            target=run_extraction_process,
-            args=(video, output_dir, chunk_size, scale_width, workers, self.output_pattern.get().strip(), jpeg_quality, self.analysis_only.get(), reuse_metadata),
-            kwargs={"result_queue": self.log_queue},
+        command = self._build_cli_command(
+            video=video,
+            output_dir=output_dir,
+            chunk_size=chunk_size,
+            scale_width=scale_width,
+            workers=workers,
+            output_pattern=self.output_pattern.get().strip(),
+            jpeg_quality=jpeg_quality,
+            analysis_only=self.analysis_only.get(),
+            reuse_metadata=reuse_metadata,
         )
-        self.worker_process.start()
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        self.worker_process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=creationflags,
+        )
+        self.log_thread = threading.Thread(
+            target=self._stream_process_output,
+            args=(self.worker_process,),
+            daemon=True,
+        )
+        self.log_thread.start()
 
     def _drain_log_queue(self) -> None:
+        if self.is_closing:
+            return
+
         while self.log_queue is not None:
             try:
                 kind, payload = self.log_queue.get_nowait()
@@ -407,21 +505,25 @@ class SharpestFrameGui(tk.Tk):
             elif kind == "done":
                 self._append_log(self.t("done"))
                 self.worker_process = None
+                self.log_thread = None
                 self._set_running_state(False)
                 messagebox.showinfo(self.t("title"), self.t("done"))
             elif kind == "cancelled":
                 self._append_log(self.t("cancelled"))
                 self.worker_process = None
+                self.log_thread = None
                 self._set_running_state(False)
             elif kind == "error":
                 self._append_log(f"Error: {payload}")
                 self.worker_process = None
+                self.log_thread = None
                 self._set_running_state(False)
                 messagebox.showerror(self.t("failed"), payload)
 
-        if self.worker_process and not self.worker_process.is_alive() and self.run_button["state"] == "disabled":
+        if self.worker_process and self.worker_process.poll() is not None and self.run_button["state"] == "disabled":
             self._set_running_state(False)
             self.worker_process = None
+            self.log_thread = None
 
         self.after(100, self._drain_log_queue)
 
@@ -432,5 +534,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    mp.freeze_support()
     main()

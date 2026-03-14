@@ -79,6 +79,7 @@ def create_progress(total: Optional[int], desc: str, logger: Logger = None):
         "unit": "frame",
         "dynamic_ncols": True,
         "leave": False,
+        "bar_format": "{l_bar}{bar:20}{r_bar}",
     }
 
     if logger is None:
@@ -86,6 +87,7 @@ def create_progress(total: Optional[int], desc: str, logger: Logger = None):
 
     progress_kwargs["mininterval"] = 0
     progress_kwargs["miniters"] = 1
+    progress_kwargs["ascii"] = False
     return GuiTqdm(logger=logger, **progress_kwargs)
 
 
@@ -578,12 +580,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Analyze frames and write metadata only without extracting images",
     )
+    parser.add_argument(
+        "--regenerate-metadata",
+        dest="reuse_metadata",
+        action="store_false",
+        help="Ignore existing metadata and regenerate _sharpness_metadata.csv",
+    )
+    parser.add_argument(
+        "--gui-log-output",
+        action="store_true",
+        help="Emit GUI-friendly progress lines instead of terminal-formatted tqdm output",
+    )
+    parser.set_defaults(reuse_metadata=True)
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.gui_log_output and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    logger = (lambda message: print(message, flush=True)) if args.gui_log_output else None
 
     try:
         run_extraction(
@@ -595,7 +614,8 @@ def main() -> None:
             output_pattern=args.output_pattern,
             jpeg_quality=args.jpeg_quality,
             analysis_only=args.analysis_only,
-            reuse_metadata=True,
+            reuse_metadata=args.reuse_metadata,
+            logger=logger,
         )
     except SharpestFrameError as exc:
         print(f"Error: {exc}")
