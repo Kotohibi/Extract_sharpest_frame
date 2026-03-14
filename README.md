@@ -21,6 +21,10 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
 - GUI stop button for cancelling a running job
 - `tqdm`-style progress output in the GUI log area
 
+## GUI
+<img src="./image/gui.png" alt="GUI Screenshot" width="640" />
+
+
 ## Requirements
 
 - Python 3.8+
