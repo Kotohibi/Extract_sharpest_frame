@@ -233,6 +233,11 @@ class SharpestFrameGui(tk.Tk):
     def _is_worker_running(self) -> bool:
         return self.worker_process is not None and self.worker_process.poll() is None
 
+    def _get_app_base_dir(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).parent
+        return Path(__file__).parent
+
     def _build_cli_command(
         self,
         video: str,
@@ -245,9 +250,21 @@ class SharpestFrameGui(tk.Tk):
         analysis_only: bool,
         reuse_metadata: bool,
     ) -> list[str]:
-        command = [
-            sys.executable,
-            str(Path(__file__).with_name("extract_sharpest_frame.py")),
+        base_dir = self._get_app_base_dir()
+        if getattr(sys, "frozen", False):
+            cli_exe = base_dir / "extract_sharpest_frame.exe"
+            if not cli_exe.exists():
+                raise FileNotFoundError(
+                    f"Required extractor executable was not found: {cli_exe}"
+                )
+            command = [str(cli_exe)]
+        else:
+            command = [
+                sys.executable,
+                str(base_dir / "extract_sharpest_frame.py"),
+            ]
+
+        command.extend([
             "--gui-log-output",
             "--video",
             video,
@@ -263,7 +280,7 @@ class SharpestFrameGui(tk.Tk):
             output_pattern,
             "--jpeg-quality",
             jpeg_quality,
-        ]
+        ])
 
         if analysis_only:
             command.append("--analysis-only")
@@ -458,17 +475,22 @@ class SharpestFrameGui(tk.Tk):
         self._set_running_state(True)
         self._append_log(f"{self.t('running')} {Path(video)}")
 
-        command = self._build_cli_command(
-            video=video,
-            output_dir=output_dir,
-            chunk_size=chunk_size,
-            scale_width=scale_width,
-            workers=workers,
-            output_pattern=self.output_pattern.get().strip(),
-            jpeg_quality=jpeg_quality,
-            analysis_only=self.analysis_only.get(),
-            reuse_metadata=reuse_metadata,
-        )
+        try:
+            command = self._build_cli_command(
+                video=video,
+                output_dir=output_dir,
+                chunk_size=chunk_size,
+                scale_width=scale_width,
+                workers=workers,
+                output_pattern=self.output_pattern.get().strip(),
+                jpeg_quality=jpeg_quality,
+                analysis_only=self.analysis_only.get(),
+                reuse_metadata=reuse_metadata,
+            )
+        except FileNotFoundError as exc:
+            self._set_running_state(False)
+            messagebox.showerror(self.t("failed"), str(exc))
+            return
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         self.worker_process = subprocess.Popen(
             command,

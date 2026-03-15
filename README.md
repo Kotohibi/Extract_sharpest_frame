@@ -9,6 +9,11 @@ This repository provides two entry points:
 
 The implementation uses OpenCV to read video frames, calculates sharpness with the variance of the Laplacian, groups frames by chunk, and saves the sharpest frame from each chunk as a JPEG.
 
+---
+**Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
+- [BOOTH URL] https://kotohibi-cg.booth.pm/ 
+---
+
 ## Features
 
 - 100% Python workflow with no `ffmpeg` executable dependency
