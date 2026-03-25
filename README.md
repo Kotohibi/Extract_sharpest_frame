@@ -13,6 +13,10 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
 **Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
 ---
+Refer to the detail workflow
+- [[English]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/409bc16876b9e0)
+- [[日本語]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/28b137f1873921)
+
 
 ## Features
 
@@ -133,9 +137,10 @@ GUI behavior:
 | `--scale-width` | int | `1920` | Resize wider frames to this width for analysis |
 | `--workers` | int | `4` | Worker count for metadata extraction multiprocessing |
 | `--output-dir` | string | `sharp_frames` | Output directory |
+|`--output-format`| string | `png` | Output file format, png or jpg |
 | `--output-pattern` | string | `output_frame_%05d.jpg` | Output filename pattern |
 | `--jpeg-quality` | int or percent | `95` | JPEG quality percentage from `1` to `100` |
-| `--analysis-only` | flag | off | Create metadata only without writing JPEG files |
+| `--analysis-only` | flag | off | Create metadata only without writing JPEG or PNG files |
 
 ## Output Files
 
