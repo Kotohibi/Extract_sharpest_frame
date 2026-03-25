@@ -10,6 +10,43 @@ from typing import Optional
 from extract_sharpest_frame import PROGRESS_PREFIX
 
 
+class ToolTip:
+    def __init__(self, widget, text: str = "") -> None:
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind("<Enter>", self.show_tip)
+        widget.bind("<Leave>", self.hide_tip)
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+    def show_tip(self, event=None) -> None:
+        if self.tip_window or not self.text:
+            return
+
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("Segoe UI", 9),
+        )
+        label.pack(ipadx=4)
+
+    def hide_tip(self, event=None) -> None:
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
 TRANSLATIONS = {
     "en": {
         "title": "Sharpest Frame Extractor",
@@ -22,6 +59,7 @@ TRANSLATIONS = {
         "scale_width": "Scale width",
         "workers": "Workers",
         "output_pattern": "Output pattern",
+        "output_format": "Output format",
         "jpeg_quality": "JPEG quality (%)",
         "analysis_only": "Analysis only",
         "run": "Run",
@@ -45,6 +83,20 @@ TRANSLATIONS = {
         "browse_output_title": "Select an output folder",
         "lang_en": "English",
         "lang_ja": "Japanese",
+        "tip_language": "Switch the UI language.",
+        "tip_video": "Video file to analyze and extract sharp frames from.",
+        "tip_output_dir": "Folder where metadata and extracted frames will be written.",
+        "tip_chunk_size": "Select one sharpest frame from each chunk of this many frames.",
+        "tip_scale_width": "Resize width used for sharpness analysis. Use 0 to analyze at original size.",
+        "tip_workers": "Number of worker processes used during sharpness analysis.",
+        "tip_output_pattern": "Printf-style output filename pattern. The extension follows Output format.",
+        "tip_output_format": "Choose PNG or JPG for extracted frames.",
+        "tip_jpeg_quality": "JPEG save quality. Used only when Output format is JPG.",
+        "tip_analysis_only": "Only create sharpness metadata without saving extracted frames.",
+        "tip_clear_log": "Clear the log output shown below.",
+        "tip_stop": "Stop the running extraction process.",
+        "tip_run": "Start analysis and extract the sharpest frame from each chunk.",
+        "tip_log": "Shows progress, command output, and errors from the extractor.",
     },
     "ja": {
         "title": "シャープフレーム抽出 GUI",
@@ -57,6 +109,7 @@ TRANSLATIONS = {
         "scale_width": "解析幅",
         "workers": "ワーカー数",
         "output_pattern": "出力ファイル名パターン",
+        "output_format": "出力形式",
         "jpeg_quality": "JPEG品質 (%)",
         "analysis_only": "解析のみ",
         "run": "実行",
@@ -80,6 +133,20 @@ TRANSLATIONS = {
         "browse_output_title": "出力フォルダを選択",
         "lang_en": "英語",
         "lang_ja": "日本語",
+        "tip_language": "GUI の表示言語を切り替えます。",
+        "tip_video": "解析してシャープなフレームを切り出す動画ファイルです。",
+        "tip_output_dir": "メタデータと切り出し画像の保存先フォルダです。",
+        "tip_chunk_size": "このフレーム数ごとに最もシャープな1枚を選びます。",
+        "tip_scale_width": "シャープネス解析時の縮小幅です。0 なら元解像度で解析します。",
+        "tip_workers": "シャープネス解析に使うワーカープロセス数です。",
+        "tip_output_pattern": "printf 形式の出力ファイル名です。拡張子は出力形式に合わせて変わります。",
+        "tip_output_format": "切り出し画像の形式を PNG または JPG から選びます。",
+        "tip_jpeg_quality": "JPEG 保存品質です。出力形式が JPG のときだけ使われます。",
+        "tip_analysis_only": "画像は保存せず、シャープネスメタデータだけ作成します。",
+        "tip_clear_log": "下のログ表示を消去します。",
+        "tip_stop": "実行中の抽出処理を停止します。",
+        "tip_run": "解析を開始し、各チャンクから最もシャープなフレームを抽出します。",
+        "tip_log": "抽出処理の進捗、実行ログ、エラーを表示します。",
     },
 }
 
@@ -93,7 +160,8 @@ class SharpestFrameGui(tk.Tk):
         self.chunk_size = tk.StringVar(value="30")
         self.scale_width = tk.StringVar(value="1920")
         self.workers = tk.StringVar(value="4")
-        self.output_pattern = tk.StringVar(value="output_frame_%05d.jpg")
+        self.output_pattern = tk.StringVar(value="output_frame_%05d.png")
+        self.output_format = tk.StringVar(value="png")
         self.jpeg_quality = tk.StringVar(value="95")
         self.analysis_only = tk.BooleanVar(value=False)
         self.status_text = tk.StringVar()
@@ -105,6 +173,7 @@ class SharpestFrameGui(tk.Tk):
         self.progress_line_active = False
         self.active_metadata_path: Optional[Path] = None
         self.active_metadata_may_be_partial = False
+        self.tooltips: dict[str, ToolTip] = {}
 
         self._build_widgets()
         self._apply_translations()
@@ -173,10 +242,21 @@ class SharpestFrameGui(tk.Tk):
         self.pattern_entry = ttk.Entry(root, textvariable=self.output_pattern)
         self.pattern_entry.grid(row=4, column=3, sticky="ew", pady=6)
 
+        self.output_format_label = ttk.Label(root)
+        self.output_format_label.grid(row=5, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.output_format_combo = ttk.Combobox(
+            root,
+            state="readonly",
+            values=["png", "jpg"],
+            textvariable=self.output_format,
+        )
+        self.output_format_combo.grid(row=5, column=1, sticky="ew", pady=6)
+        self.output_format.trace_add("write", lambda *_args: self._sync_format_controls())
+
         self.jpeg_quality_label = ttk.Label(root)
-        self.jpeg_quality_label.grid(row=5, column=0, sticky="w", padx=(0, 8), pady=6)
+        self.jpeg_quality_label.grid(row=5, column=2, sticky="w", padx=(16, 8), pady=6)
         self.jpeg_quality_entry = ttk.Entry(root, textvariable=self.jpeg_quality)
-        self.jpeg_quality_entry.grid(row=5, column=1, sticky="ew", pady=6)
+        self.jpeg_quality_entry.grid(row=5, column=3, sticky="ew", pady=6)
 
         options_frame = ttk.Frame(root)
         options_frame.grid(row=6, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
@@ -209,6 +289,33 @@ class SharpestFrameGui(tk.Tk):
         self.status_label = ttk.Label(root, textvariable=self.status_text)
         self.status_label.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(12, 0))
 
+        self._create_tooltips()
+
+    def _set_tooltip(self, name: str, widget, key: str) -> None:
+        tooltip = self.tooltips.get(name)
+        if tooltip is None:
+            self.tooltips[name] = ToolTip(widget, self.t(key))
+        else:
+            tooltip.set_text(self.t(key))
+
+    def _create_tooltips(self) -> None:
+        self._set_tooltip("language_combo", self.language_combo, "tip_language")
+        self._set_tooltip("video_entry", self.video_entry, "tip_video")
+        self._set_tooltip("video_button", self.video_button, "tip_video")
+        self._set_tooltip("output_entry", self.output_entry, "tip_output_dir")
+        self._set_tooltip("output_button", self.output_button, "tip_output_dir")
+        self._set_tooltip("chunk_entry", self.chunk_entry, "tip_chunk_size")
+        self._set_tooltip("scale_entry", self.scale_entry, "tip_scale_width")
+        self._set_tooltip("workers_spinbox", self.workers_spinbox, "tip_workers")
+        self._set_tooltip("pattern_entry", self.pattern_entry, "tip_output_pattern")
+        self._set_tooltip("output_format_combo", self.output_format_combo, "tip_output_format")
+        self._set_tooltip("jpeg_quality_entry", self.jpeg_quality_entry, "tip_jpeg_quality")
+        self._set_tooltip("analysis_checkbox", self.analysis_checkbox, "tip_analysis_only")
+        self._set_tooltip("clear_button", self.clear_button, "tip_clear_log")
+        self._set_tooltip("stop_button", self.stop_button, "tip_stop")
+        self._set_tooltip("run_button", self.run_button, "tip_run")
+        self._set_tooltip("log_text", self.log_text, "tip_log")
+
     def _apply_translations(self) -> None:
         self.title(self.t("title"))
         self.language_label.configure(text=self.t("language"))
@@ -220,6 +327,7 @@ class SharpestFrameGui(tk.Tk):
         self.scale_label.configure(text=self.t("scale_width"))
         self.workers_label.configure(text=self.t("workers"))
         self.pattern_label.configure(text=self.t("output_pattern"))
+        self.output_format_label.configure(text=self.t("output_format"))
         self.jpeg_quality_label.configure(text=self.t("jpeg_quality"))
         self.analysis_checkbox.configure(text=self.t("analysis_only"))
         self.run_button.configure(text=self.t("run"))
@@ -229,6 +337,8 @@ class SharpestFrameGui(tk.Tk):
         if not self._is_worker_running():
             self.status_text.set(self.t("ready"))
         self.language_combo.configure(values=["ja", "en"])
+        self._create_tooltips()
+        self._sync_format_controls()
 
     def _is_worker_running(self) -> bool:
         return self.worker_process is not None and self.worker_process.poll() is None
@@ -246,6 +356,7 @@ class SharpestFrameGui(tk.Tk):
         scale_width: int,
         workers: int,
         output_pattern: str,
+        output_format: str,
         jpeg_quality: str,
         analysis_only: bool,
         reuse_metadata: bool,
@@ -278,6 +389,8 @@ class SharpestFrameGui(tk.Tk):
             output_dir,
             "--output-pattern",
             output_pattern,
+            "--output-format",
+            output_format,
             "--jpeg-quality",
             jpeg_quality,
         ])
@@ -415,6 +528,34 @@ class SharpestFrameGui(tk.Tk):
 
         return str(quality)
 
+    def _sync_output_pattern_extension(self) -> None:
+        pattern = self.output_pattern.get().strip()
+        if not pattern:
+            return
+
+        output_format = self.output_format.get().strip().lower()
+        if not output_format:
+            return
+
+        pattern_path = Path(pattern)
+        target_suffix = f".{output_format}"
+
+        if pattern_path.suffix:
+            updated_pattern = str(pattern_path.with_suffix(target_suffix))
+        else:
+            updated_pattern = f"{pattern}{target_suffix}"
+
+        if updated_pattern != pattern:
+            self.output_pattern.set(updated_pattern)
+
+    def _sync_format_controls(self) -> None:
+        if self._is_worker_running():
+            return
+
+        self._sync_output_pattern_extension()
+        is_jpg = self.output_format.get().lower() == "jpg"
+        self.jpeg_quality_entry.configure(state="normal" if is_jpg else "disabled")
+
     def _set_running_state(self, running: bool) -> None:
         edit_state = "disabled" if running else "normal"
         self.run_button.configure(state=edit_state)
@@ -423,6 +564,9 @@ class SharpestFrameGui(tk.Tk):
         self.language_combo.configure(state="disabled" if running else "readonly")
         self.stop_button.configure(state="normal" if running else "disabled")
         self.status_text.set(self.t("running") if running else self.t("ready"))
+        self.output_format_combo.configure(state="disabled" if running else "readonly")
+        if not running:
+            self._sync_format_controls()
 
     def _stop_run(self) -> None:
         if not self._is_worker_running():
@@ -455,7 +599,7 @@ class SharpestFrameGui(tk.Tk):
             chunk_size = self._parse_int(self.chunk_size.get().strip(), "chunk_size")
             scale_width = self._parse_int(self.scale_width.get().strip(), "scale_width")
             workers = self._parse_int(self.workers.get().strip(), "workers")
-            jpeg_quality = self._parse_jpeg_quality(self.jpeg_quality.get())
+            jpeg_quality = self._parse_jpeg_quality(self.jpeg_quality.get()) if self.output_format.get() == "jpg" else "95"
         except ValueError as exc:
             messagebox.showerror(self.t("failed"), str(exc))
             return
@@ -483,6 +627,7 @@ class SharpestFrameGui(tk.Tk):
                 scale_width=scale_width,
                 workers=workers,
                 output_pattern=self.output_pattern.get().strip(),
+                output_format=self.output_format.get().strip(),
                 jpeg_quality=jpeg_quality,
                 analysis_only=self.analysis_only.get(),
                 reuse_metadata=reuse_metadata,
@@ -491,7 +636,15 @@ class SharpestFrameGui(tk.Tk):
             self._set_running_state(False)
             messagebox.showerror(self.t("failed"), str(exc))
             return
+
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        startupinfo = None
+        if sys.platform == "win32":
+            creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+
         self.worker_process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -501,6 +654,7 @@ class SharpestFrameGui(tk.Tk):
             errors="replace",
             bufsize=1,
             creationflags=creationflags,
+            startupinfo=startupinfo,
         )
         self.log_thread = threading.Thread(
             target=self._stream_process_output,

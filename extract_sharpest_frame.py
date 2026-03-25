@@ -1,5 +1,6 @@
 import argparse
 import csv
+import multiprocessing
 import sys
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from math import ceil
@@ -23,6 +24,7 @@ CancelChecker = Optional[Callable[[], bool]]
 PROGRESS_PREFIX = "[progress] "
 SPINNER_FRAMES = "|/-\\"
 MULTIPROCESS_PROGRESS_INTERVAL = 0.2
+SUPPORTED_OUTPUT_FORMATS = ("png", "jpg")
 
 
 class SharpestFrameError(Exception):
@@ -142,6 +144,19 @@ def parse_jpeg_quality_value(value) -> int:
         raise SharpestFrameError("JPEG quality must be between 1 and 100.")
 
     return quality
+
+
+def normalize_output_format(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized == "jpeg":
+        normalized = "jpg"
+
+    if normalized not in SUPPORTED_OUTPUT_FORMATS:
+        raise SharpestFrameError(
+            f"--output-format must be one of: {', '.join(SUPPORTED_OUTPUT_FORMATS)}"
+        )
+
+    return normalized
 
 
 def build_analysis_ranges(total_frames: int, workers: int) -> List[Tuple[int, int]]:
@@ -385,21 +400,41 @@ def parse_best_frames(
     return best_frame_numbers
 
 
-def format_output_filename(output_pattern: str, output_index: int) -> str:
+def format_output_filename(output_pattern: str, output_index: int, output_format: str) -> str:
     try:
-        return output_pattern % output_index
+        output_name = output_pattern % output_index
     except (TypeError, ValueError):
         if "%d" not in output_pattern:
-            return output_pattern
+            output_name = output_pattern
+        else:
+            raise SharpestFrameError(
+                "--output-pattern must be a valid printf-style pattern such as output_frame_%05d.png"
+            )
+
+    output_path = Path(output_name)
+    current_suffix = output_path.suffix.lower()
+    target_suffix = f".{output_format}"
+
+    if current_suffix in {".jpg", ".jpeg", ".png"}:
+        return str(output_path.with_suffix(target_suffix))
+
+    if current_suffix:
         raise SharpestFrameError(
-            "--output-pattern must be a valid printf-style pattern such as output_frame_%05d.jpg"
+            "--output-pattern must end with .png or .jpg, or omit the extension entirely."
         )
 
+    return f"{output_name}{target_suffix}"
 
-def save_frame(frame, output_file: Path, jpeg_quality: int) -> None:
+
+def save_frame(frame, output_file: Path, jpeg_quality: int, output_format: str) -> None:
     ensure_opencv_available()
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    success = cv2.imwrite(str(output_file), frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+
+    if output_format == "jpg":
+        success = cv2.imwrite(str(output_file), frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+    else:
+        success = cv2.imwrite(str(output_file), frame)
+
     if not success:
         raise SharpestFrameError(f"Failed to write image: {output_file}")
 
@@ -410,6 +445,7 @@ def extract_frames(
     output_dir: Path,
     output_pattern: str,
     jpeg_quality: int,
+    output_format: str,
     logger: Logger = None,
     should_cancel: CancelChecker = None,
 ) -> None:
@@ -443,8 +479,8 @@ def extract_frames(
                 break
 
             if frame_number in target_frame_numbers:
-                output_name = format_output_filename(output_pattern, output_index)
-                save_frame(frame, output_dir / output_name, jpeg_quality)
+                output_name = format_output_filename(output_pattern, output_index, output_format)
+                save_frame(frame, output_dir / output_name, jpeg_quality, output_format)
                 output_index += 1
                 saved_count += 1
 
@@ -470,7 +506,8 @@ def run_extraction(
     scale_width: int = 1920,
     workers: int = 4,
     output_dir: str = "sharp_frames",
-    output_pattern: str = "output_frame_%05d.jpg",
+    output_pattern: str = "output_frame_%05d.png",
+    output_format: str = "png",
     jpeg_quality: int = 95,
     analysis_only: bool = False,
     reuse_metadata: bool = True,
@@ -493,6 +530,7 @@ def run_extraction(
     if workers <= 0:
         raise SharpestFrameError("--workers must be 1 or greater.")
 
+    output_format = normalize_output_format(output_format)
     jpeg_quality = parse_jpeg_quality_value(jpeg_quality)
 
     output_dir_path = Path(output_dir)
@@ -532,6 +570,7 @@ def run_extraction(
         output_dir=output_dir_path,
         output_pattern=output_pattern,
         jpeg_quality=jpeg_quality,
+        output_format=output_format,
         logger=logger,
         should_cancel=should_cancel,
     )
@@ -567,13 +606,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="sharp_frames", help="Output directory")
     parser.add_argument(
         "--output-pattern",
-        default="output_frame_%05d.jpg",
-        help="Output filename pattern in printf format",
+        default="output_frame_%05d.png",
+        help="Output filename pattern in printf format; extension is normalized to --output-format",
+    )
+    parser.add_argument(
+        "--output-format",
+        default="png",
+        choices=SUPPORTED_OUTPUT_FORMATS,
+        help="Output image format",
     )
     parser.add_argument(
         "--jpeg-quality",
         default="95",
-        help="JPEG quality percentage from 1 to 100; values like 95 or 95%% are accepted",
+        help="JPEG quality percentage from 1 to 100; used only when --output-format=jpg",
     )
     parser.add_argument(
         "--analysis-only",
@@ -612,6 +657,7 @@ def main() -> None:
             workers=args.workers,
             output_dir=args.output_dir,
             output_pattern=args.output_pattern,
+            output_format=args.output_format,
             jpeg_quality=args.jpeg_quality,
             analysis_only=args.analysis_only,
             reuse_metadata=args.reuse_metadata,
@@ -623,4 +669,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
