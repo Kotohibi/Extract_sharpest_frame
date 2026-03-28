@@ -12,6 +12,11 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
 ---
 **Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
+  - Only binary edition can support the following features
+    - Generating masks by YOLO automatically (person, car, bus, etc...)
+      - More accurate SfM for Metashape and others
+      - <img src="./image/yolo_1.png" alt="GUI Screenshot" width="640" />
+    - Faster frame extraction (Multi process optimization)
 ---
 Refer to the detail workflow
 - [[English]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/409bc16876b9e0)
