@@ -7,7 +7,7 @@ This repository provides two entry points:
 - `extract_sharpest_frame.py`: command-line interface
 - `extract_sharpest_frame_gui.py`: desktop GUI with Japanese/English switching
 
-The implementation uses OpenCV to read video frames, calculates sharpness with the variance of the Laplacian, groups frames by chunk, and saves the sharpest frame from each chunk as a JPEG.
+The implementation uses OpenCV to read video frames, calculates sharpness with the variance of the Laplacian, groups frames by chunk, and saves the sharpest frame from each chunk as a JPEG or PNG.
 
 ---
 **Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
