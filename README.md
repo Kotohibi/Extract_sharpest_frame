@@ -17,8 +17,11 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
       - More accurate SfM for Metashape and others
       - <img src="./image/yolo_1.png" alt="GUI Screenshot" width="640" />
     - Faster frame extraction (Multi process optimization)
+    - Exclude similar frames. This is useful when movement speed during shooting is irregular.
+      - <img src="./image/similar_frame.png" alt="GUI Screenshot" width="640" />
+
 ---
-Refer to the detail workflow
+Refer to the detail workflow  
 - [[English]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/409bc16876b9e0)
 - [[日本語]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/28b137f1873921)
 
