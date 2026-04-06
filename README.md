@@ -17,8 +17,13 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
       - More accurate SfM for Metashape and others
       - <img src="./image/yolo_1.png" alt="GUI Screenshot" width="640" />
     - Faster frame extraction (Multi process optimization)
-    - Exclude similar frames. This is useful when movement speed during shooting is irregular.
+    - V0.4.0 
+    Exclude similar frames. This is useful when movement speed during shooting is irregular.
       - <img src="./image/similar_frame.png" alt="GUI Screenshot" width="640" />
+      - https://x.com/kotohibi_3d/status/2039716550194950248?s=20
+    - V0.5.0
+      - Custom mask, video range, save and load config
+      - https://x.com/kotohibi_3d/status/2041150636797092322?s=20
 
 ---
 Refer to the detail workflow  
