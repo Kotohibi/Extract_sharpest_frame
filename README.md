@@ -21,10 +21,14 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
     - V0.4.0 
     Exclude similar frames. This is useful when movement speed during shooting is irregular.
       - <img src="./image/similar_frame.png" alt="GUI Screenshot" width="640" />
-      - https://x.com/kotohibi_3d/status/2039716550194950248?s=20
+      - https://x.com/kotohibi_3d/status/2039716550194950248
     - V0.5.0
       - Custom mask, video range, save and load config
-      - https://x.com/kotohibi_3d/status/2041150636797092322?s=20
+      - https://x.com/kotohibi_3d/status/2041150636797092322
+    - V0.6.0
+      - Added mask only mode for still images
+      - Able to review and adjust the effect of eliminating similar frames before execution.
+      - https://x.com/kotohibi_3d/status/2046282840883826952
 
 ---
 Refer to the detail workflow  
