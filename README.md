@@ -12,7 +12,6 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
 ---
 **Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
-- [Gumroad URL] https://kotohibi.gumroad.com/
   - Only binary edition can support the following features
     - Generating masks by YOLO automatically (person, car, bus, etc...)
       - More accurate SfM for Metashape and others
