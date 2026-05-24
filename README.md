@@ -28,6 +28,10 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
       - Added mask only mode for still images
       - Able to review and adjust the effect of eliminating similar frames before execution.
       - https://x.com/kotohibi_3d/status/2046282840883826952
+    - V0.7.0
+      - SAM3 text prompt masking
+      - SAM3 is very powerful for masking but needs PC resource so please check the readme in the zip.
+      - https://x.com/kotohibi_3d/status/2058304471759986983
 
 ---
 Refer to the detail workflow  
