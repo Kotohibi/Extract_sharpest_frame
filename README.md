@@ -32,6 +32,22 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
       - SAM3 text prompt masking
       - SAM3 is very powerful for masking but needs PC resource so please check the readme in the zip.
       - https://x.com/kotohibi_3d/status/2058304471759986983
+    - V0.8.0
+      - Batch process supported for multiple videos. You no longer need to process one by one video.
+      - Some GUI improvements
+      - https://x.com/kotohibi_3d/status/2064662878054166531
+    - V0.8.5
+      - Selectable image size for inputting SAM3
+      - Able to specify confidence value for SAM3
+      - https://x.com/kotohibi_3d/status/2071208324352331931
+    - V0.9.0
+      - SAM3 dual masking (See comment for details) 
+      - Some improvements in SAM3 preview dialog
+      - https://x.com/kotohibi_3d/status/2073433180712157185
+    - V1.0.0
+      - It embeds preset seam masks to reduce stitch line error for OSMO360 and AVATA360
+      - Some bug fixes
+      - https://x.com/kotohibi_3d/status/2083478237402038391
 
 ---
 Refer to the detail workflow  
