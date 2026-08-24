@@ -18,21 +18,37 @@ The implementation uses OpenCV to read video frames, calculates sharpness with t
       - More accurate SfM for Metashape and others
       - <img src="./image/yolo_1.png" alt="GUI Screenshot" width="640" />
     - Faster frame extraction (Multi process optimization)
-    - V0.4.0 
-    Exclude similar frames. This is useful when movement speed during shooting is irregular.
+    - V0.4.0 (2026-04-02)
+      - Exclude similar frames. This is useful when movement speed during shooting is irregular.
       - <img src="./image/similar_frame.png" alt="GUI Screenshot" width="640" />
       - https://x.com/kotohibi_3d/status/2039716550194950248
-    - V0.5.0
+    - V0.5.0 (2026-04-06)
       - Custom mask, video range, save and load config
       - https://x.com/kotohibi_3d/status/2041150636797092322
-    - V0.6.0
+    - V0.6.0 (2026-04-21)
       - Added mask only mode for still images
       - Able to review and adjust the effect of eliminating similar frames before execution.
       - https://x.com/kotohibi_3d/status/2046282840883826952
-    - V0.7.0
+    - V0.7.0 (2026-05-24)
       - SAM3 text prompt masking
       - SAM3 is very powerful for masking but needs PC resource so please check the readme in the zip.
       - https://x.com/kotohibi_3d/status/2058304471759986983
+    - V0.8.0 (2026-06-10)
+      - Batch process supported for multiple videos. You no longer need to process one by one video.
+      - Some GUI improvements
+      - https://x.com/kotohibi_3d/status/2064662878054166531
+    - V0.8.5 (2026-06-28)
+      - Selectable image size for inputting SAM3
+      - Able to specify confidence value for SAM3
+      - https://x.com/kotohibi_3d/status/2071208324352331931
+    - V0.9.0 (2026-07-05)
+      - SAM3 dual masking (See comment for details) 
+      - Some improvements in SAM3 preview dialog
+      - https://x.com/kotohibi_3d/status/2073433180712157185
+    - V1.0.0 (2026-08-01)
+      - It embeds preset seam masks to reduce stitch line error for OSMO360 and AVATA360
+      - Some bug fixes
+      - https://x.com/kotohibi_3d/status/2083478237402038391
 
 ---
 Refer to the detail workflow  
